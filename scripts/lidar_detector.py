@@ -13,7 +13,9 @@ from pcdet.utils import common_utils
 import os
 from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2 as pc2
-from visualization_msg import MarkerArray
+from visualization_msg.msg import MarkerArray
+from visualization_msg.msg import Marker
+from geometry_msg.msg import Point
 
 height_offset = -1.0 # move the origin 1m up
 
@@ -96,11 +98,112 @@ class lidar_detector:
 
 	def detect_callback(self, event):
 		if (self.pointcloud_received):
-			self.inference(self.curr_input_data)
+			self.detection_results = self.inference(self.curr_input_data)
 			self.pointcloud_detected = True	
 
 	def vis_callback(self, event):
-		pass
+		if (self.pointcloud_detected):
+			boxes_msg = self.get_bbox_msg(self.detection_results)
+			self.bbox_pub.publish(boxes_msg)
+
+	def get_bbox_msg(self, results):
+		boxes_msg = MarkerArray()
+		pred_bboxes = results["pred_boxes"]
+		for box in pred_bboxes:
+			cx = box[0]
+			cy = box[1]
+			cz = box[2]
+			lx = box[3]
+			ly = box[4]
+			lz = box[5]
+			angle = box[6]
+
+			# get eight points (unrotated)
+			p1 = np.array([cx+lx/2., cy+ly/2., cz+lz/2.])
+			p2 = np.array([cx+lx/2., cy-ly/2., cz+lz/2.])
+			p3 = np.array([cx-lx/2., cy+ly/2., cz+lz/2.])
+			p4 = np.array([cx-lx/2., cy-ly/2., cz+lz/2.])
+			p5 = np.array([cx+lx/2., cy+ly/2., cz-lz/2.])
+			p6 = np.array([cx+lx/2., cy-ly/2., cz-lz/2.])
+			p7 = np.array([cx-lx/2., cy+ly/2., cz-lz/2.])
+			p5 = np.array([cx-lx/2., cy+ly/2., cz-lz/2.])
+
+			# rotation matrix
+			R = np.array([[cos(angle), -sin(angle), 0],
+				          [sin(angle), cos(angle), 0],
+				          [0, 0, 1]
+				        ])
+
+			p1r = R @ p1
+			p2r = R @ p2
+			p3r = R @ p3
+			p4r = R @ p4
+			p5r = R @ p5
+			p6r = R @ p6
+			p7r = R @ p7
+			p8r = R @ p8
+
+			l1 = self.make_line_msg(p1r, p2r)
+			l2 = self.make_line_msg(p1r, p3r)
+			l3 = self.make_line_msg(p2r, p4r)
+			l4 = self.make_line_msg(p3r, p4r)
+			l5 = self.make_line_msg(p1r, p5r)
+			l6 = self.make_line_msg(p2r, p6r)
+			l7 = self.make_line_msg(p3r, p7r)
+			l8 = self.make_line_msg(p4r, p8r)
+			l9 = self.make_line_msg(p5r, p6r)
+			l10 = self.make_line_msg(p5r, p7r)
+			l11 = self.make_line_msg(p6r, p8r)
+			l12 = self.make_line_msg(p7r, p8r)
+			boxes_msg.markers.push_back(l1)
+			boxes_msg.markers.push_back(l2)
+			boxes_msg.markers.push_back(l3)
+			boxes_msg.markers.push_back(l4)
+			boxes_msg.markers.push_back(l5)
+			boxes_msg.markers.push_back(l6)
+			boxes_msg.markers.push_back(l7)
+			boxes_msg.markers.push_back(l8)
+			boxes_msg.markers.push_back(l9)
+			boxes_msg.markers.push_back(l10)
+			boxes_msg.markers.push_back(l11)
+			boxes_msg.markers.push_back(l12)
+		return boxes_msg
+
+	def make_line_msg(self, p1, p2):
+		line_msg = Marker()
+		x1 = p1[0]
+		y1 = p1[1]
+		z1 = p1[2]
+		
+		x2 = p2[0]
+		y2 = p2[1]
+		z2 = p2[2]
+
+		p1p = Point()
+		p1p.x = x1
+		p1p.y = y1
+		p1p.z = z1
+		p2p = Point()
+		p2p.x = x2
+		p2p.y = y2
+		p2p.z = z2		
+		
+		line_msg.points.push_back(p1p)
+		line_msg.points.push_back(p2p)
+
+		marker.header.frame_id = "/lidar_detection_frame"
+		marker.type = marker.LINE_LIST
+		marker.action = marker.ADD
+		marker.scale.x = 0.2
+		marker.scale.y = 0.2
+		marker.scale.z = 0.2
+		marker.color.a = 1.0
+		marker.color.r = 1.0
+		marker.color.g = 0.0
+		marker.color.b = 1.0
+		marker.pose.orientation.w = 1.0
+		return line_msg
+
 
 	# prepare model inputs
 	def prepare_data(self, points):
@@ -110,4 +213,5 @@ class lidar_detector:
 		return curr_input_data
 
 	def inference(self, inputs):
-		self.detection_results, _ = self.model.forward(load_data_to_gpu(inputs))
+		detection_results, _ = self.model.forward(load_data_to_gpu(inputs))
+		return detection_results
