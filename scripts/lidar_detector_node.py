@@ -3,7 +3,7 @@
 import rospy
 from lidar_detector import *
 
-def main()
+def main():
 	rospy.init_node("lidar_detector_node")
 	lidar_detector()
 	rospy.spin()
