@@ -16,8 +16,11 @@ import sensor_msgs.point_cloud2 as pc2
 from visualization_msgs.msg import MarkerArray
 from visualization_msgs.msg import Marker
 from geometry_msgs.msg import Point
+import time
+import ros_numpy
 
-height_offset = -0.8 # move the origin 1m up
+
+height_offset = -1.2 # move the origin 1m up
 
 path_curr = os.path.dirname(__file__)
 pointcloud_topic_name = "/ouster/points"
@@ -83,24 +86,37 @@ class lidar_detector:
 
 
         # timer
-        rospy.Timer(rospy.Duration(0.1), self.detect_callback)
+        rospy.Timer(rospy.Duration(0.05), self.detect_callback)
         rospy.Timer(rospy.Duration(0.033), self.vis_callback)
 
     def pointcloud_callback(self, pointcloud):
-        points_xyzi = np.array([[0, 0, 0, 0]])
-        gen = pc2.read_points(pointcloud, skip_nans=True)
-        int_data = list(gen)
-        for x in int_data:
-            points_xyzi = np.append(points_xyzi, [[x[0], x[1], x[2]+height_offset, x[3]/256.]], axis=0)
+        start_time = time.time()
+        pc = ros_numpy.numpify(pointcloud)
+        points_xyzi=np.zeros((pc.shape[0] * pc.shape[1],4))
+        points_xyzi[:,0]= np.resize(pc['x'], pc.shape[0] * pc.shape[1])
+        points_xyzi[:,1]= np.resize(pc['y'], pc.shape[0] * pc.shape[1])
+        points_xyzi[:,2]= np.resize(pc['z']+height_offset, pc.shape[0] * pc.shape[1])
+        points_xyzi[:,3]= 0
+        # points_xyzi = np.array([[0, 0, 0, 0]])
+        # gen = pc2.read_points(pointcloud, skip_nans=True)
+        # int_data = list(gen)
+        # start_time = time.time()
+
+        # for x in int_data:
+        #     points_xyzi = np.append(points_xyzi, [[x[0], x[1], x[2]+height_offset, x[3]/256.]], axis=0)
 
         self.curr_input_data = self.prepare_data(points_xyzi)
         self.pointcloud_received = True
-
+        end_time = time.time()
+        # print("data prepare time: ", end_time-start_time)
     def detect_callback(self, event):
         if (self.pointcloud_received):
             # print("start inference.")
+            start_time = time.time()
             self.detection_results = self.inference(self.curr_input_data)
             self.pointcloud_detected = True 
+            end_time = time.time()
+            # print("Detection time: ", end_time-start_time)
             # print("finish inference")
 
     def vis_callback(self, event):
@@ -219,10 +235,11 @@ class lidar_detector:
         line_msg.scale.y = 0.2
         line_msg.scale.z = 0.2
         line_msg.color.a = 1.0
-        line_msg.color.r = 1.0
-        line_msg.color.g = 0.0
+        line_msg.color.r = 0.0
+        line_msg.color.g = 1.0
         line_msg.color.b = 1.0
         line_msg.pose.orientation.w = 1.0
+        line_msg.lifetime = rospy.Time(0.1)
         return line_msg
 
 
