@@ -15,20 +15,19 @@ from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2 as pc2
 from visualization_msgs.msg import MarkerArray
 from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point, Pose, Vector3
-from vision_msgs.msg import BoundingBox3D, BoundingBox3DArray
+from geometry_msgs.msg import Point
 import time
 import ros_numpy
 
 
-height_offset = -1.2 # move the origin 1m up
+height_offset = -1.6 # move the origin 1m up
 
 path_curr = os.path.dirname(__file__)
 pointcloud_topic_name = "/theia/os_cloud_node/points"
-cfg_path = "cfg/pv_rcnn.yaml"
-model_filename = "pv_rcnn_8369.pth"
-#cfg_path = "cfg/pointpillar.yaml"
-#model_filename = "pointpillar_7728.pth"
+#cfg_path = "cfg/pv_rcnn.yaml"
+#model_filename = "pv_rcnn_8369.pth"
+cfg_path = "cfg/pointpillar.yaml"
+model_filename = "pointpillar_7728.pth"
 cfg_from_yaml_file(os.path.join(path_curr, cfg_path), cfg)
 
 
@@ -83,7 +82,6 @@ class lidar_detector:
         
         # publisher
         self.bbox_pub = rospy.Publisher("lidar_detector/detected_bounding_boxes", MarkerArray, queue_size=10)
-        self.b3Dbox   = rospy.Publisher("lidar_detector/3D_Lidar_bounding_box", BoundingBox3DArray, queue_size=10)
 
 
 
@@ -123,12 +121,10 @@ class lidar_detector:
 
     def vis_callback(self, event):
         if (self.pointcloud_detected):
-            boxes_msg, bounding_box3D_msg = self.get_bbox_msg(self.detection_results)
+            boxes_msg = self.get_bbox_msg(self.detection_results)
             self.bbox_pub.publish(boxes_msg)
-            self.b3Dbox.publish(bounding_box3D_msg)
 
     def get_bbox_msg(self, results):
-        bounding_box3D_msg= BoundingBox3DArray()    #Gary did this change
         boxes_msg = MarkerArray()
         pred_bboxes = results[0]["pred_boxes"].cpu()
         marker_id = 0
@@ -143,17 +139,7 @@ class lidar_detector:
                 lz = box[5]
                 angle = box[6]
                 # angle = 0
-                # Gary Written Portion 145 - 153
-                # bounding_box3D_msg.boxes.center.position.x=cx
-                # bounding_box3D_msg.boxes.center.position.y=cy
-                # bounding_box3D_msg.boxes.center.position.z=cz
-                # bounding_box3D_msg.boxes.size.x=lx
-                # bounding_box3D_msg.boxes.size.y=ly
-                # bounding_box3D_msg.boxes.size.z=lz
-                Temp_boxes=BoundingBox3D()
-                Temp_boxes=self.make_boxes(cx,cy,cz,lx,ly,lz)
-                bounding_box3D_msg.boxes.append(Temp_boxes)
-                
+
                 # get eight points (unrotated)
                 p1 = np.array([cx+lx/2., cy+ly/2., cz+lz/2.])
                 p2 = np.array([cx+lx/2., cy-ly/2., cz+lz/2.])
@@ -217,24 +203,7 @@ class lidar_detector:
                 boxes_msg.markers.append(l11)
                 boxes_msg.markers.append(l12)
                 i+=1
-        return boxes_msg, bounding_box3D_msg
-
-    #Gary Made these Changes as well as this function from 219-232
-    def make_boxes(self, x_center, y_center, z_center, len_x, len_y, len_z ):
-        box3D_msg=BoundingBox3D()
-        
-        box3D_msg.center.position.x=x_center
-        box3D_msg.center.position.y=y_center
-        box3D_msg.center.position.z=z_center
-        box3D_msg.size.x=len_x
-        box3D_msg.size.y=len_y
-        box3D_msg.size.z=len_z
-        # box3D_msg.header.frame_id = "theia/os_sensor"
-        # box3D_msg.h
-
-        return box3D_msg
-
-
+        return boxes_msg
 
     def make_line_msg(self, p1, p2, marker_id):
         line_msg = Marker()
