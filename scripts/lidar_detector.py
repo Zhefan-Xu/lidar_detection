@@ -15,20 +15,26 @@ from sensor_msgs.msg import PointCloud2
 import sensor_msgs.point_cloud2 as pc2
 from visualization_msgs.msg import MarkerArray
 from visualization_msgs.msg import Marker
-from geometry_msgs.msg import Point, Pose, Vector3
+from geometry_msgs.msg import Point, Pose, Vector3, PoseStamped, Quaternion
 from vision_msgs.msg import BoundingBox3D, BoundingBox3DArray
+from nav_msgs.msg import Odometry
 import time
 import ros_numpy
+from tf.transformations import quaternion_matrix
 
 
 height_offset = -1.2 # move the origin 1m up
+lidar_height = 0.8
 
 path_curr = os.path.dirname(__file__)
 pointcloud_topic_name = "/theia/os_cloud_node/points"
+pose_topic_name = "/mavros/vision_pose/pose"
 cfg_path = "cfg/pv_rcnn.yaml"
 model_filename = "pv_rcnn_8369.pth"
 #cfg_path = "cfg/pointpillar.yaml"
 #model_filename = "pointpillar_7728.pth"
+print(cfg_path)
+print(path_curr)
 cfg_from_yaml_file(os.path.join(path_curr, cfg_path), cfg)
 
 
@@ -80,16 +86,24 @@ class lidar_detector:
             
         # subscriber
         self.pc_sub = rospy.Subscriber(pointcloud_topic_name, PointCloud2, self.pointcloud_callback)
+        self.pose_sub = rospy.Subscriber(pose_topic_name, PoseStamped, self.pose_callback)
         
         # publisher
         self.bbox_pub = rospy.Publisher("lidar_detector/detected_bounding_boxes", MarkerArray, queue_size=10)
         self.b3Dbox   = rospy.Publisher("lidar_detector/3D_Lidar_bounding_box", BoundingBox3DArray, queue_size=10)
 
-
-
         # timer
         rospy.Timer(rospy.Duration(0.1), self.detect_callback)
         rospy.Timer(rospy.Duration(0.033), self.vis_callback)
+
+        # coord transformation member vars
+        self.LidarPoseMatrix = np.identity(4)
+        self.position = np.zeros((3,1))
+        self.orientation = np.zeros((3,3))
+        # self.body_to_lidar = np.array([[0.0,  0.0,  1.0,  0.09],
+        #                                 [-1.0,  0.0,  0.0,  0.0] ,   
+        #                                 [0.0, -1.0,  0.0,  0.095],
+        #                                 [0.0,  0.0,  0.0,  1.0]])
 
     def pointcloud_callback(self, pointcloud):
         start_time = time.time()
@@ -111,6 +125,22 @@ class lidar_detector:
         self.pointcloud_received = True
         end_time = time.time()
         # print("data prepare time: ", end_time-start_time)
+
+    def pose_callback(self, pose_msg):
+        print("COME INTO POSE CB")
+        quat = np.array([pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w])
+        rot = quaternion_matrix(quat) # motation matrix for map to body( right below lidar )
+        rot[0,3] = pose_msg.pose.position.x
+        rot[1,3] = pose_msg.pose.position.y
+        rot[2,3] = pose_msg.pose.position.z + lidar_height
+        rot[3,3] = 1.
+
+        self.LidarPoseMatrix = rot
+        print("transformation matrix ")
+        print(self.LidarPoseMatrix)
+        self.orientation = rot[:3,:3]
+        self.position = rot[:3,3].reshape((3,1))
+
     def detect_callback(self, event):
         if (self.pointcloud_received):
             # print("start inference.")
@@ -128,6 +158,7 @@ class lidar_detector:
             self.b3Dbox.publish(bounding_box3D_msg)
 
     def get_bbox_msg(self, results):
+        print("get bbox msg")
         bounding_box3D_msg= BoundingBox3DArray()    #Gary did this change
         boxes_msg = MarkerArray()
         pred_bboxes = results[0]["pred_boxes"].cpu()
@@ -135,6 +166,7 @@ class lidar_detector:
         i = 0
         for box in pred_bboxes:
             if (results[0]["pred_labels"][i] == 2):
+                print("get restult")
                 cx = box[0]
                 cy = box[1]
                 cz = box[2] - height_offset
@@ -142,17 +174,6 @@ class lidar_detector:
                 ly = box[4]
                 lz = box[5]
                 angle = box[6]
-                # angle = 0
-                # Gary Written Portion 145 - 153
-                # bounding_box3D_msg.boxes.center.position.x=cx
-                # bounding_box3D_msg.boxes.center.position.y=cy
-                # bounding_box3D_msg.boxes.center.position.z=cz
-                # bounding_box3D_msg.boxes.size.x=lx
-                # bounding_box3D_msg.boxes.size.y=ly
-                # bounding_box3D_msg.boxes.size.z=lz
-                Temp_boxes=BoundingBox3D()
-                Temp_boxes=self.make_boxes(cx,cy,cz,lx,ly,lz)
-                bounding_box3D_msg.boxes.append(Temp_boxes)
                 
                 # get eight points (unrotated)
                 p1 = np.array([cx+lx/2., cy+ly/2., cz+lz/2.])
@@ -164,7 +185,7 @@ class lidar_detector:
                 p7 = np.array([cx-lx/2., cy+ly/2., cz-lz/2.])
                 p8 = np.array([cx-lx/2., cy-ly/2., cz-lz/2.])
 
-                # rotation matrix
+                # rotation matrix according to lidar-detected-pose
                 R = np.array([[np.cos(angle), -np.sin(angle), 0],
                               [np.sin(angle), np.cos(angle), 0],
                               [0, 0, 1]
@@ -179,6 +200,23 @@ class lidar_detector:
                 p6r = R @ (p6 -  center) + center
                 p7r = R @ (p7 -  center) + center
                 p8r = R @ (p8 -  center) + center
+
+
+                # transform into map frame
+                print("orientation shape ", self.orientation.shape)
+                print("position shape ", self.position.shape)
+                print("p1r before transformation: ",p1r)
+                print("pqr before transformation shape: ",p1r.shape)
+                p1r = self.orientation @p1r.reshape((3,1)) + self.position
+                p2r = self.orientation @p2r.reshape((3,1)) + self.position
+                p3r = self.orientation @p3r.reshape((3,1)) + self.position
+                p4r = self.orientation @p4r.reshape((3,1)) + self.position
+                p5r = self.orientation @p5r.reshape((3,1)) + self.position
+                p6r = self.orientation @p6r.reshape((3,1)) + self.position
+                p7r = self.orientation @p7r.reshape((3,1)) + self.position
+                p8r = self.orientation @p8r.reshape((3,1)) + self.position
+
+
 
                 l1 = self.make_line_msg(p1r, p2r, marker_id)
                 marker_id += 1
@@ -216,7 +254,48 @@ class lidar_detector:
                 boxes_msg.markers.append(l10)
                 boxes_msg.markers.append(l11)
                 boxes_msg.markers.append(l12)
+                # boxes_msg.header.frame_id = "/map"
                 i+=1
+
+
+                points = [p1r, p2r, p3r, p4r, p5r, p6r, p7r, p8r]
+                print(p1r.shape)
+                print("p1r ",p1r)
+
+                xmin,xmax = p1r[0], p1r[0]
+                ymin,ymax = p1r[1], p1r[1]
+                zmin,zmax = p1r[2], p1r[2]
+                for p in points:
+                    if p[0] < xmin:
+                        xmin = p1[0]
+                    if p[0] > xmax:
+                        xmax = p1[0]
+                    if p[1] < ymin:
+                        ymin = p1[1]
+                    if p[1] > ymax:
+                        ymax = p1[1]
+                    if p[2] < zmin:
+                        zmin = p1[2]
+                    if p[2] > zmax:
+                        zmax = p1[2]
+
+                center = np.array([[cx],[cy],[cz]])
+                lx = xmax - xmin
+                ly = ymax - ymin
+                lz = zmax - zmin
+                center = self.orientation@center + self.position
+                # angle = 0
+                # Gary Written Portion 145 - 153
+                # bounding_box3D_msg.boxes.center.position.x=cx
+                # bounding_box3D_msg.boxes.center.position.y=cy
+                # bounding_box3D_msg.boxes.center.position.z=cz
+                # bounding_box3D_msg.boxes.size.x=lx
+                # bounding_box3D_msg.boxes.size.y=ly
+                # bounding_box3D_msg.boxes.size.z=lz
+                Temp_boxes=BoundingBox3D()
+                Temp_boxes=self.make_boxes(cx,cy,cz,lx,ly,lz)
+                bounding_box3D_msg.boxes.append(Temp_boxes)
+
         return boxes_msg, bounding_box3D_msg
 
     #Gary Made these Changes as well as this function from 219-232
@@ -258,7 +337,7 @@ class lidar_detector:
         line_msg.points.append(p1p)
         line_msg.points.append(p2p)
 
-        line_msg.header.frame_id = "theia/os_sensor"
+        line_msg.header.frame_id = "map"
         line_msg.id = marker_id
         line_msg.type = line_msg.LINE_LIST
         line_msg.action = line_msg.MODIFY
