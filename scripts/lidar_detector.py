@@ -28,7 +28,8 @@ lidar_height = 0.8
 
 path_curr = os.path.dirname(__file__)
 pointcloud_topic_name = "/theia/os_cloud_node/points"
-pose_topic_name = "/mavros/vision_pose/pose"
+# pointcloud_topic_name = "/ouster/points"
+pose_topic_name = "/mavros/local_position/pose"
 cfg_path = "cfg/pv_rcnn.yaml"
 model_filename = "pv_rcnn_8369.pth"
 #cfg_path = "cfg/pointpillar.yaml"
@@ -113,21 +114,19 @@ class lidar_detector:
         points_xyzi[:,1]= np.resize(pc['y'], pc.shape[0] * pc.shape[1])
         points_xyzi[:,2]= np.resize(pc['z']+height_offset, pc.shape[0] * pc.shape[1])
         points_xyzi[:,3]= 0
-        # points_xyzi = np.array([[0, 0, 0, 0]])
-        # gen = pc2.read_points(pointcloud, skip_nans=True)
-        # int_data = list(gen)
-        # start_time = time.time()
 
-        # for x in int_data:
-        #     points_xyzi = np.append(points_xyzi, [[x[0], x[1], x[2]+height_offset, x[3]/256.]], axis=0)
+        # for 360 degree detection, we flip x direction
+        points_xyzi_inv = np.copy(points_xyzi)
+        points_xyzi_inv[:, 0] = -points_xyzi_inv[:, 0]
 
         self.curr_input_data = self.prepare_data(points_xyzi)
+        self.curr_input_data_inv = self.prepare_data(points_xyzi_inv)
         self.pointcloud_received = True
         end_time = time.time()
         # print("data prepare time: ", end_time-start_time)
 
     def pose_callback(self, pose_msg):
-        print("COME INTO POSE CB")
+        # print("COME INTO POSE CB")
         quat = np.array([pose_msg.pose.orientation.x, pose_msg.pose.orientation.y, pose_msg.pose.orientation.z, pose_msg.pose.orientation.w])
         rot = quaternion_matrix(quat) # motation matrix for map to body( right below lidar )
         rot[0,3] = pose_msg.pose.position.x
@@ -136,8 +135,8 @@ class lidar_detector:
         rot[3,3] = 1.
 
         self.LidarPoseMatrix = rot
-        print("transformation matrix ")
-        print(self.LidarPoseMatrix)
+        # print("transformation matrix ")
+        # print(self.LidarPoseMatrix)
         self.orientation = rot[:3,:3]
         self.position = rot[:3,3].reshape((3,1))
 
@@ -146,19 +145,20 @@ class lidar_detector:
             # print("start inference.")
             start_time = time.time()
             self.detection_results = self.inference(self.curr_input_data)
+            self.detection_results_inv = self.inference(self.curr_input_data_inv)
+
             self.pointcloud_detected = True 
             end_time = time.time()
-            # print("Detection time: ", end_time-start_time)
+            print("Detection time: ", end_time-start_time)
             # print("finish inference")
 
     def vis_callback(self, event):
         if (self.pointcloud_detected):
-            boxes_msg, bounding_box3D_msg = self.get_bbox_msg(self.detection_results)
+            boxes_msg, bounding_box3D_msg = self.get_bbox_msg(self.detection_results, self.detection_results_inv)
             self.bbox_pub.publish(boxes_msg)
             self.b3Dbox.publish(bounding_box3D_msg)
 
-    def get_bbox_msg(self, results):
-        print("get bbox msg")
+    def get_bbox_msg(self, results, results_inv):
         bounding_box3D_msg= BoundingBox3DArray()    #Gary did this change
         boxes_msg = MarkerArray()
         pred_bboxes = results[0]["pred_boxes"].cpu()
@@ -166,7 +166,6 @@ class lidar_detector:
         i = 0
         for box in pred_bboxes:
             if (results[0]["pred_labels"][i] == 2):
-                print("get restult")
                 cx = box[0]
                 cy = box[1]
                 cz = box[2] - height_offset
@@ -203,10 +202,6 @@ class lidar_detector:
 
 
                 # transform into map frame
-                print("orientation shape ", self.orientation.shape)
-                print("position shape ", self.position.shape)
-                print("p1r before transformation: ",p1r)
-                print("pqr before transformation shape: ",p1r.shape)
                 p1r = self.orientation @p1r.reshape((3,1)) + self.position
                 p2r = self.orientation @p2r.reshape((3,1)) + self.position
                 p3r = self.orientation @p3r.reshape((3,1)) + self.position
@@ -259,8 +254,6 @@ class lidar_detector:
 
 
                 points = [p1r, p2r, p3r, p4r, p5r, p6r, p7r, p8r]
-                print(p1r.shape)
-                print("p1r ",p1r)
 
                 xmin,xmax = p1r[0], p1r[0]
                 ymin,ymax = p1r[1], p1r[1]
@@ -295,6 +288,126 @@ class lidar_detector:
                 Temp_boxes=BoundingBox3D()
                 Temp_boxes=self.make_boxes(cx,cy,cz,lx,ly,lz)
                 bounding_box3D_msg.boxes.append(Temp_boxes)
+
+        pred_bboxes_inv = results_inv[0]["pred_boxes"].cpu()
+        i = 0
+        for box in pred_bboxes_inv:
+            if (results_inv[0]["pred_labels"][i] == 2):
+                cx = -box[0]
+                cy = box[1]
+                cz = box[2] - height_offset
+                lx = box[3]
+                ly = box[4]
+                lz = box[5]
+                angle = box[6]
+                
+                # get eight points (unrotated)
+                p1 = np.array([cx+lx/2., cy+ly/2., cz+lz/2.])
+                p2 = np.array([cx+lx/2., cy-ly/2., cz+lz/2.])
+                p3 = np.array([cx-lx/2., cy+ly/2., cz+lz/2.])
+                p4 = np.array([cx-lx/2., cy-ly/2., cz+lz/2.])
+                p5 = np.array([cx+lx/2., cy+ly/2., cz-lz/2.])
+                p6 = np.array([cx+lx/2., cy-ly/2., cz-lz/2.])
+                p7 = np.array([cx-lx/2., cy+ly/2., cz-lz/2.])
+                p8 = np.array([cx-lx/2., cy-ly/2., cz-lz/2.])
+
+                # rotation matrix according to lidar-detected-pose
+                R = np.array([[np.cos(angle), -np.sin(angle), 0],
+                              [np.sin(angle), np.cos(angle), 0],
+                              [0, 0, 1]
+                            ])
+
+                center = np.array([cx, cy, cz])
+                p1r = R @ (p1 -  center) + center
+                p2r = R @ (p2 -  center) + center
+                p3r = R @ (p3 -  center) + center
+                p4r = R @ (p4 -  center) + center
+                p5r = R @ (p5 -  center) + center
+                p6r = R @ (p6 -  center) + center
+                p7r = R @ (p7 -  center) + center
+                p8r = R @ (p8 -  center) + center
+
+
+                # transform into map frame
+                p1r = self.orientation @p1r.reshape((3,1)) + self.position
+                p2r = self.orientation @p2r.reshape((3,1)) + self.position
+                p3r = self.orientation @p3r.reshape((3,1)) + self.position
+                p4r = self.orientation @p4r.reshape((3,1)) + self.position
+                p5r = self.orientation @p5r.reshape((3,1)) + self.position
+                p6r = self.orientation @p6r.reshape((3,1)) + self.position
+                p7r = self.orientation @p7r.reshape((3,1)) + self.position
+                p8r = self.orientation @p8r.reshape((3,1)) + self.position
+
+
+
+                l1 = self.make_line_msg(p1r, p2r, marker_id)
+                marker_id += 1
+                l2 = self.make_line_msg(p1r, p3r, marker_id)
+                marker_id += 1
+                l3 = self.make_line_msg(p2r, p4r, marker_id)
+                marker_id += 1
+                l4 = self.make_line_msg(p3r, p4r, marker_id)
+                marker_id += 1
+                l5 = self.make_line_msg(p1r, p5r, marker_id)
+                marker_id += 1
+                l6 = self.make_line_msg(p2r, p6r, marker_id)
+                marker_id += 1
+                l7 = self.make_line_msg(p3r, p7r, marker_id)
+                marker_id += 1
+                l8 = self.make_line_msg(p4r, p8r, marker_id)
+                marker_id += 1
+                l9 = self.make_line_msg(p5r, p6r, marker_id)
+                marker_id += 1
+                l10 = self.make_line_msg(p5r, p7r, marker_id)
+                marker_id += 1
+                l11 = self.make_line_msg(p6r, p8r, marker_id)
+                marker_id += 1
+                l12 = self.make_line_msg(p7r, p8r, marker_id)
+                marker_id += 1
+                boxes_msg.markers.append(l1)
+                boxes_msg.markers.append(l2)
+                boxes_msg.markers.append(l3)
+                boxes_msg.markers.append(l4)
+                boxes_msg.markers.append(l5)
+                boxes_msg.markers.append(l6)
+                boxes_msg.markers.append(l7)
+                boxes_msg.markers.append(l8)
+                boxes_msg.markers.append(l9)
+                boxes_msg.markers.append(l10)
+                boxes_msg.markers.append(l11)
+                boxes_msg.markers.append(l12)
+                # boxes_msg.header.frame_id = "/map"
+                i+=1
+
+                points = [p1r, p2r, p3r, p4r, p5r, p6r, p7r, p8r]
+
+                xmin,xmax = p1r[0], p1r[0]
+                ymin,ymax = p1r[1], p1r[1]
+                zmin,zmax = p1r[2], p1r[2]
+                for p in points:
+                    if p[0] < xmin:
+                        xmin = p1[0]
+                    if p[0] > xmax:
+                        xmax = p1[0]
+                    if p[1] < ymin:
+                        ymin = p1[1]
+                    if p[1] > ymax:
+                        ymax = p1[1]
+                    if p[2] < zmin:
+                        zmin = p1[2]
+                    if p[2] > zmax:
+                        zmax = p1[2]
+
+                center = np.array([[cx],[cy],[cz]])
+                lx = xmax - xmin
+                ly = ymax - ymin
+                lz = zmax - zmin
+                center = self.orientation@center + self.position
+
+                Temp_boxes=BoundingBox3D()
+                Temp_boxes=self.make_boxes(cx,cy,cz,lx,ly,lz)
+                bounding_box3D_msg.boxes.append(Temp_boxes)
+
 
         return boxes_msg, bounding_box3D_msg
 
@@ -355,6 +468,7 @@ class lidar_detector:
 
     # prepare model inputs
     def prepare_data(self, points):
+        # print(points.shape)
         self.detector_dataset.load_data(points)
         curr_input_data = self.detector_dataset[0]
         curr_input_data = self.detector_dataset.collate_batch([curr_input_data])
