@@ -454,9 +454,9 @@ class lidar_detector:
         line_msg.id = marker_id
         line_msg.type = line_msg.LINE_LIST
         line_msg.action = line_msg.MODIFY
-        line_msg.scale.x = 0.2
-        line_msg.scale.y = 0.2
-        line_msg.scale.z = 0.2
+        line_msg.scale.x = 0.05
+        line_msg.scale.y = 0.05
+        line_msg.scale.z = 0.05
         line_msg.color.a = 1.0
         line_msg.color.r = 0.0
         line_msg.color.g = 1.0
@@ -472,8 +472,9 @@ class lidar_detector:
         self.detector_dataset.load_data(points)
         curr_input_data = self.detector_dataset[0]
         curr_input_data = self.detector_dataset.collate_batch([curr_input_data])
-        return curr_input_data
 
+        return curr_input_data
+    
     def inference(self, inputs):
         with torch.no_grad():
             load_data_to_gpu(inputs)
